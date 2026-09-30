@@ -74,7 +74,8 @@ export async function handler(req, res) {
 
 On a server the SDK:
 
-- defaults `batchSize` to **1**, so every push is sent immediately
+- **never batches** — every push is uploaded immediately. A `batchSize` passed
+  on a server is ignored, with a warning
 - keeps its queue in memory only, never touching `localStorage`
 - reports `platform: "server"`
 - accepts a `sessionToken` so the session belongs to the caller, not the process
@@ -90,7 +91,7 @@ invocations sharing one instance would share a session and a queue.
 | --- | --- | --- |
 | `apiKey` | required | `x-api-key` header |
 | `baseUrl` | required | `/track` is appended |
-| `batchSize` | 10 browser, 1 server | Flush threshold |
+| `batchSize` | 10 | Browser only; ignored on a server, which never batches |
 | `platform` | `web` / `server` | App value wins; sent as `platform` |
 | `appVersion` | `''` | App value wins; sent as `app_version` |
 | `buildNumber` | `''` | App value wins; sent as `build_number` |
@@ -123,5 +124,5 @@ Sent properties: `type`, `value`, `platform`, `app_version`, `build_number`,
 - **The browser queue is capped** (500 events, oldest dropped). `localStorage`
   is a few MB per origin and throws when full, which would surface inside the
   host app. The mobile SDKs have no cap.
-- **`batchSize` defaults to 1 on a server**, where a queue cannot outlive the
-  invocation.
+- **A server runtime never batches.** Every event goes out on its own request,
+  because a queue cannot outlive a cloud-function invocation.

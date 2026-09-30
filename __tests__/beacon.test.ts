@@ -54,7 +54,32 @@ describe('sanitizeValue', () => {
 });
 
 describe('server runtime', () => {
-  test('defaults to batchSize 1 so nothing is left queued', async () => {
+  test('never batches, even when a batchSize is passed', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    let postCount = 0;
+    const fetchFn = mockClient(() => {
+      postCount++;
+      return 202;
+    });
+
+    const client = new BeaconClient({
+      apiKey: 'k',
+      baseUrl: 'https://example.com',
+      batchSize: 50, // ignored on a server
+      fetchFn,
+      runtime: 'server',
+    });
+
+    await client.push({ eventName: 'a', funnel: 'f', type: 't' });
+    await client.push({ eventName: 'b', funnel: 'f', type: 't' });
+    await client.push({ eventName: 'c', funnel: 'f', type: 't' });
+
+    expect(postCount).toBe(3);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  test('sends immediately with no batchSize given', async () => {
     let postCount = 0;
     const fetchFn = mockClient(() => {
       postCount++;

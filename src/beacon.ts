@@ -17,8 +17,11 @@ export interface BeaconOptions {
   apiKey: string;
   baseUrl: string;
 
-  /// Flush threshold. Defaults to 10 in a browser and 1 on a server, where a
-  /// process can end at any moment and nothing should sit queued.
+  /// Flush threshold. Browser only, default 10.
+  ///
+  /// Server runtimes never batch: a cloud function can be frozen the moment
+  /// its handler resolves, so every push is uploaded immediately and this
+  /// option is ignored.
   batchSize?: number;
 
   /// App-supplied context. Each value wins over what the SDK would resolve.
@@ -79,9 +82,18 @@ export class BeaconClient {
 
     this.runtime = options.runtime ?? detectRuntime();
 
-    const batchSize = options.batchSize ?? (this.runtime === 'browser' ? 10 : 1);
-    if (batchSize < 1) {
-      throw new Error('batchSize must be >= 1');
+    // Server runtimes never batch — see BeaconOptions.batchSize.
+    let batchSize = 1;
+    if (this.runtime === 'browser') {
+      batchSize = options.batchSize ?? 10;
+      if (batchSize < 1) {
+        throw new Error('batchSize must be >= 1');
+      }
+    } else if (options.batchSize !== undefined && options.batchSize !== 1) {
+      console.warn(
+        'Beacon: batchSize is ignored on a server runtime; every event is ' +
+          'uploaded immediately so none is lost when the invocation ends.',
+      );
     }
 
     this.config = new BeaconConfig({
@@ -136,6 +148,9 @@ export class BeaconClient {
       immediate = false,
     } = options;
 
+    // A server invocation can end at any moment, so nothing is ever queued.
+    const sendNow = immediate || this.runtime === 'server';
+
     const props: Record<string, unknown> = {
       type,
       value: sanitizeValue(value),
@@ -153,7 +168,7 @@ export class BeaconClient {
       properties: props,
     });
 
-    if (immediate) {
+    if (sendNow) {
       await this.flush();
       return;
     }
