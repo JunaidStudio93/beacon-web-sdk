@@ -9,7 +9,7 @@ Zero runtime dependencies — uses built-in `fetch`, `crypto` and `Intl`.
 ## Install
 
 ```sh
-npm install git+https://github.com/<org>/beacon-web-sdk.git
+npm install git+https://github.com/JunaidStudio93/beacon-web-sdk.git
 ```
 
 Requires Node 18+ on the server (for built-in `fetch`), any modern browser on

@@ -18,7 +18,7 @@ Zero runtime dependencies — built-in `fetch`, `crypto` and `Intl` only.
 ## 2. Install
 
 ```sh
-npm install git+https://github.com/<org>/beacon-web-sdk.git
+npm install git+https://github.com/JunaidStudio93/beacon-web-sdk.git
 ```
 
 TypeScript, compiled on install by the `prepare` script, so a git dependency
