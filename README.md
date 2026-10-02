@@ -102,8 +102,8 @@ invocations sharing one instance would share a session and a queue.
 | `fetchFn` | global `fetch` | For tests |
 | `runtime` | auto-detected | `'browser'` or `'server'` |
 
-Methods: `push(...)`, `flush()`, `refresh()`, `dispose()`, and a `sessionToken`
-getter.
+Methods: `push(...)`, `flush()`, `refresh()`, `identify(...)`, `dispose()`, and
+a `sessionToken` getter.
 
 There is no way to read an app version or build number from a web page or a
 cloud function, so both default to empty — pass them from your build config.
@@ -114,6 +114,46 @@ Identical to the mobile SDKs: persist first, batch, upload to
 `POST {baseUrl}/track`, and delete only on HTTP **202**. Anything else keeps
 events queued for the next attempt. `refresh()` uploads everything pending and
 then starts a new session.
+
+## Anonymous visitors
+
+While nobody is signed in there is no email to send, so pass the device (or
+browser) id in the `email` field:
+
+```ts
+await beacon.push({
+  eventName: 'page_view',
+  funnel: 'onboarding',
+  type: 'navigation',
+  email: deviceId, // stands in for the real email until sign-in
+});
+```
+
+`email` is the identity column every dashboard aggregate groups by, so each
+visitor counts as their own user rather than collapsing into one anonymous
+blob.
+
+When they sign in, hand over the real email:
+
+```ts
+await beacon.identify(deviceId, user.email);
+```
+
+The backend rewrites every event already recorded under that device id onto the
+real email, so the anonymous and signed-in halves become one user. Events
+pushed after this call should carry the real email directly.
+
+Notes:
+
+- The rewrite is asynchronous. The call returns as soon as the server accepts
+  it; the dashboard catches up a few seconds later.
+- It flushes the local queue first, so events still waiting to upload are not
+  stranded under the old identity.
+- Nothing is retried. A failure is logged, never thrown — analytics must not
+  break sign-in.
+- Unlike `flush()`, the request is sent without `keepalive`: sign-in is not
+  page unload, so it has no reason to spend that budget.
+- The backend only looks back 90 days by default (`IDENTIFY_LOOKBACK_DAYS`).
 
 Sent properties: `type`, `value`, `platform`, `app_version`, `build_number`,
 `timezone`, plus whatever the caller passes in `properties`. The backend adds

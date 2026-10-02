@@ -27,10 +27,17 @@ export class BeaconConfig {
     this.sessionToken = uuidV4();
   }
 
-  get trackUrl(): string {
-    const normalized = this.baseUrl.endsWith('/')
+  private get origin(): string {
+    return this.baseUrl.endsWith('/')
       ? this.baseUrl.slice(0, this.baseUrl.length - 1)
       : this.baseUrl;
-    return `${normalized}/track`;
+  }
+
+  get trackUrl(): string {
+    return `${this.origin}/track`;
+  }
+
+  get identifyUrl(): string {
+    return `${this.origin}/identify`;
   }
 }

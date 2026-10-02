@@ -40,4 +40,25 @@ export class BeaconUploader {
 
     return response.status === 202;
   }
+
+  /// Asks the API to rewrite a device's anonymous history onto a real email.
+  /// Returns `true` when the server accepts the request (HTTP 202).
+  ///
+  /// 202 means the backfill job was submitted, not that it has finished — the
+  /// rewrite completes inside BigQuery a few seconds later.
+  ///
+  /// Sent without `keepalive`, unlike [upload]: this fires on sign-in, not on
+  /// page unload, so it has no reason to spend that budget.
+  async identify(deviceId: string, email: string): Promise<boolean> {
+    const response = await this.fetchFn(this.config.identifyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.config.apiKey,
+      },
+      body: JSON.stringify({ deviceId, email }),
+    });
+
+    return response.status === 202;
+  }
 }

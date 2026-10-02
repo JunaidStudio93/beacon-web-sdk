@@ -157,7 +157,55 @@ Custom `properties` merge last, so keys named `type`, `value`, `platform`,
 `app_version`, `build_number` or `timezone` overwrite the SDK's own. Treat
 those six as reserved.
 
-## 7. Check it works
+## 7. Anonymous visitors and sign-in
+
+While nobody is signed in there is no email to send. Put the **device id** (or
+a persisted browser id) in the `email` field:
+
+```ts
+await beacon.push({
+  eventName: 'page_view',
+  funnel: 'onboarding',
+  type: 'navigation',
+  email: deviceId, // stands in for the real email until sign-in
+});
+```
+
+This is the right slot, not a hack: `email` is the identity column every
+dashboard aggregate groups by. Sending the device id there makes each visitor
+count as their own user. Leaving it blank collapses every signed-out visitor
+into a single anonymous blob.
+
+The id is yours to generate and persist — the SDK does not create one. It must
+survive reloads, or every page load looks like a new user.
+
+When the visitor signs in, hand over the real email:
+
+```ts
+await beacon.identify(deviceId, user.email);
+```
+
+The backend rewrites every event already recorded under that device id onto the
+real email, joining the anonymous and signed-in halves into one user. From then
+on, pass the real email on `push()` as usual.
+
+What to expect:
+
+- **Asynchronous.** `identify()` resolves once the server accepts it; the rows
+  change in BigQuery a few seconds later. A user looked up immediately after
+  sign-in may still show the device id.
+- **Flushes first**, so events still queued locally are uploaded before the
+  rewrite runs and are not stranded under the old identity.
+- **Never throws on failure** — logged like `push()` and `flush()`. Analytics
+  must not break sign-in. It does throw on empty arguments.
+- **Not retried.** A failed rewrite leaves the user split across two
+  identities. Calling it again with the same pair is safe.
+- **Only the last 90 days** are rewritten (backend `IDENTIFY_LOOKBACK_DAYS`).
+
+Call it once per sign-in, not on every page load — each call costs a full
+BigQuery scan.
+
+## 8. Check it works
 
 - [ ] Website: fire 10 events, see exactly one `POST /track`
 - [ ] Cloud function: fire 1 event, see one request immediately
@@ -166,8 +214,11 @@ those six as reserved.
 - [ ] Website: queue a few events, reload — they upload rather than vanish
 - [ ] Website: close the tab with events pending — the request still goes out
 - [ ] `properties` shows the right `platform`, `app_version`, `timezone`
+- [ ] Signed-out events carry the device id in `email`
+- [ ] `identify(deviceId, email)` → one `POST /identify`, server responds 202
+- [ ] A minute later the panel shows that device's old events under the email
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
@@ -178,7 +229,7 @@ those six as reserved.
 | Server events share a session | Singleton reused; use `new BeaconClient(...)` per invocation |
 | Nothing persists in the browser | Private mode or blocked storage; falls back to memory |
 
-## 9. Known limits
+## 10. Known limits
 
 1. **The browser queue is capped at 500 events**, oldest dropped. `localStorage`
    is a few MB per origin and throws when full, which would surface inside the
@@ -190,7 +241,7 @@ those six as reserved.
 4. **No request timeout.** Do not `await` a push on a render-blocking path —
    use `void Beacon.instance.push({...})`.
 
-## 10. Status
+## 11. Status
 
 11 of 12 behaviours covered by tests; browser and server runtimes both
 simulated. **Not yet run in a real browser or a deployed function** — the first

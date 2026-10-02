@@ -330,3 +330,119 @@ describe('shared behaviour', () => {
     expect(client.sessionToken).not.toBe(first);
   });
 });
+
+describe('BeaconClient identify', () => {
+  // Browser runtime on purpose: a server runtime pins batchSize to 1, so
+  // nothing ever sits in the queue and the ordering test below has nothing to
+  // order. autoFlushOnHide is off because there is no window to listen on.
+  function client(fetchFn: typeof fetch, storage = new MemoryBeaconStorage()) {
+    return {
+      beacon: new BeaconClient({
+        apiKey: 'test_key',
+        baseUrl: 'https://example.com',
+        batchSize: 100, // high, so nothing auto-flushes mid-test
+        fetchFn,
+        storage,
+        runtime: 'browser',
+        autoFlushOnHide: false,
+      }),
+      storage,
+    };
+  }
+
+  test('posts deviceId and email to /identify with the api key', async () => {
+    const calls: CapturedRequest[] = [];
+    const { beacon } = client(
+      mockClient((request) => {
+        calls.push(request);
+        return 202;
+      }),
+    );
+
+    await beacon.identify('device_abc', 'user@example.com');
+
+    const identifyCalls = calls.filter((c) => c.url.endsWith('/identify'));
+    expect(identifyCalls).toHaveLength(1);
+    expect(identifyCalls[0].headers['x-api-key']).toBe('test_key');
+    expect(identifyCalls[0].keepalive).toBe(false);
+    expect(JSON.parse(identifyCalls[0].body)).toEqual({
+      deviceId: 'device_abc',
+      email: 'user@example.com',
+    });
+  });
+
+  test('uploads queued events before asking for the rewrite', async () => {
+    const order: string[] = [];
+    const { beacon, storage } = client(
+      mockClient((request) => {
+        order.push(request.url.endsWith('/identify') ? 'identify' : 'track');
+        return 202;
+      }),
+    );
+
+    await beacon.push({
+      eventName: 'anon_view',
+      funnel: 'onboarding',
+      type: 'nav',
+      email: 'device_abc',
+    });
+    expect(await storage.pendingCount()).toBe(1);
+
+    await beacon.identify('device_abc', 'user@example.com');
+
+    // The queued event must reach the server BEFORE the rewrite runs,
+    // otherwise it lands after the UPDATE and keeps the device id forever.
+    expect(order).toEqual(['track', 'identify']);
+    expect(await storage.pendingCount()).toBe(0);
+  });
+
+  test('trims both arguments', async () => {
+    const calls: CapturedRequest[] = [];
+    const { beacon } = client(
+      mockClient((request) => {
+        calls.push(request);
+        return 202;
+      }),
+    );
+
+    await beacon.identify('  device_abc  ', '  user@example.com  ');
+
+    const body = JSON.parse(
+      calls.filter((c) => c.url.endsWith('/identify'))[0].body,
+    );
+    expect(body).toEqual({ deviceId: 'device_abc', email: 'user@example.com' });
+  });
+
+  test('rejects empty arguments', () => {
+    const { beacon } = client(mockClient(() => 202));
+
+    expect(() => beacon.identify('   ', 'user@example.com')).toThrow(
+      'deviceId must not be empty',
+    );
+    expect(() => beacon.identify('device_abc', '  ')).toThrow(
+      'email must not be empty',
+    );
+  });
+
+  test('does not throw when the server rejects or the network fails', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const rejecting = client(
+      mockClient((request) => (request.url.endsWith('/identify') ? 500 : 202)),
+    );
+    await expect(
+      rejecting.beacon.identify('device_abc', 'user@example.com'),
+    ).resolves.toBeUndefined();
+
+    const exploding = (async (url: string) => {
+      if (String(url).endsWith('/identify')) throw new Error('offline');
+      return { status: 202 } as Response;
+    }) as unknown as typeof fetch;
+
+    await expect(
+      client(exploding).beacon.identify('device_abc', 'user@example.com'),
+    ).resolves.toBeUndefined();
+
+    warn.mockRestore();
+  });
+});

@@ -202,6 +202,48 @@ export class BeaconClient {
     return current;
   }
 
+  /// Attaches a real email to a device's anonymous event history.
+  ///
+  /// While the visitor is signed out the app has no email to send, so it puts
+  /// its device id in the `email` field of every event. Call this once they
+  /// sign in and the backend rewrites that history onto [email], joining the
+  /// anonymous and signed-in halves into a single user.
+  ///
+  /// Flushes first, on the same lock as [flush]: events still queued locally
+  /// were pushed under the device id, and the server-side rewrite only sees
+  /// what has already arrived. Uploading them before the rewrite runs is what
+  /// keeps them from being stranded under the old identity.
+  ///
+  /// Like [push] and [flush], a network or server failure is logged rather
+  /// than thrown — analytics must never break the calling app. Throws only on
+  /// invalid arguments, which are programming errors.
+  identify(deviceId: string, email: string): Promise<void> {
+    if (deviceId.trim().length === 0) {
+      throw new Error('deviceId must not be empty');
+    }
+    if (email.trim().length === 0) {
+      throw new Error('email must not be empty');
+    }
+
+    const previous = this.flushLock;
+    const current = previous.then(async () => {
+      await this.flushInternal();
+      try {
+        const accepted = await this.uploader.identify(
+          deviceId.trim(),
+          email.trim(),
+        );
+        if (!accepted) {
+          console.warn('Beacon: identify rejected (non-202)');
+        }
+      } catch (e) {
+        console.warn('Beacon: identify failed', e);
+      }
+    });
+    this.flushLock = current.catch(() => {});
+    return current;
+  }
+
   private async flushInternal(): Promise<void> {
     const rows = await this.storage.allPending();
     if (rows.length === 0) return;
