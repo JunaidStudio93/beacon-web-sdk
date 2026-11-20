@@ -221,6 +221,7 @@ describe('browser runtime', () => {
 
     for (let i = 0; i < 12; i++) {
       await storage.insertEvent({
+        eventId: `id-${i}`,
         eventName: `e${i}`,
         uid: 'u',
         funnel: 'f',
@@ -444,5 +445,114 @@ describe('BeaconClient identify', () => {
     ).resolves.toBeUndefined();
 
     warn.mockRestore();
+  });
+});
+
+describe('event ids', () => {
+  const UUID_V4 =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  test('every event carries a distinct id', async () => {
+    const sent: { eventId: string }[] = [];
+    const fetchFn = mockClient((request) => {
+      sent.push(...JSON.parse(request.body).events);
+      return 202;
+    });
+
+    const client = new BeaconClient({
+      apiKey: 'k',
+      baseUrl: 'https://example.com',
+      fetchFn,
+      runtime: 'server',
+      storage: new MemoryBeaconStorage(),
+    });
+
+    await client.push({ eventName: 'one', funnel: 'f', type: 't' });
+    await client.push({ eventName: 'two', funnel: 'f', type: 't' });
+
+    const ids = sent.map((e) => e.eventId);
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect(id).toMatch(UUID_V4);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  test('a resend carries the id the event was created with', async () => {
+    // The duplicate case: the tab is closed before the 202 lands, the row is
+    // never deleted, and the next page view sends it again.
+    (globalThis as { localStorage?: unknown }).localStorage = new FakeStorage();
+    const batches: { eventId: string; timestamp: string }[][] = [];
+    let status = 500;
+    const fetchFn = mockClient((request) => {
+      batches.push(JSON.parse(request.body).events);
+      return status;
+    });
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const first = new BeaconClient({
+      apiKey: 'k',
+      baseUrl: 'https://example.com',
+      fetchFn,
+      runtime: 'server',
+      storage: new LocalStorageBeaconStorage(),
+    });
+    await first.push({ eventName: 'one', funnel: 'f', type: 't' });
+    expect(batches).toHaveLength(1);
+
+    // New page view, same localStorage queue; this time it is accepted.
+    status = 202;
+    const second = new BeaconClient({
+      apiKey: 'k',
+      baseUrl: 'https://example.com',
+      fetchFn,
+      runtime: 'server',
+      storage: new LocalStorageBeaconStorage(),
+    });
+    await second.flush();
+
+    expect(batches).toHaveLength(2);
+    expect(batches[1][0].eventId).toBe(batches[0][0].eventId);
+    expect(batches[1][0].timestamp).toBe(batches[0][0].timestamp);
+    warn.mockRestore();
+  });
+
+  test('backfills rows queued by an SDK version without eventId', async () => {
+    // A queue as the previous SDK left it: no eventId on the stored event.
+    const fake = new FakeStorage();
+    (globalThis as { localStorage?: unknown }).localStorage = fake;
+    fake.setItem(
+      'beacon_events',
+      JSON.stringify({
+        nextId: 8,
+        rows: [
+          {
+            id: 7,
+            event: {
+              eventName: 'queued_before_upgrade',
+              uid: 'u',
+              funnel: 'f',
+              sessionToken: 's',
+              timestamp: '2026-01-01T00:00:00Z',
+              email: 'e',
+              properties: {},
+            },
+          },
+        ],
+      }),
+    );
+
+    const storage = new LocalStorageBeaconStorage();
+    const rows = await storage.allPending();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].event.eventName).toBe('queued_before_upgrade');
+    expect(rows[0].event.timestamp).toBe('2026-01-01T00:00:00Z');
+    expect(rows[0].event.eventId).toMatch(UUID_V4);
+
+    // Persisted, so a retry of the same row reuses the id rather than
+    // minting a new one, and the stored nextId is not rewound.
+    const again = await storage.allPending();
+    expect(again[0].event.eventId).toBe(rows[0].event.eventId);
+    expect(JSON.parse(fake.getItem('beacon_events')!).nextId).toBe(8);
   });
 });

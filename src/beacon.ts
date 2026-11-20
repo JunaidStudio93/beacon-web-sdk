@@ -158,7 +158,11 @@ export class BeaconClient {
       ...(properties ?? {}),
     };
 
+    // Minted here, at creation, not at upload: the id is stored alongside the
+    // event, so an event resent after a tab closed before the 202 landed
+    // arrives with the id it was born with and the backend can drop it.
     await this.storage.insertEvent({
+      eventId: uuidV4(),
       eventName: sanitizeName(eventName),
       funnel: sanitizeName(funnel),
       uid,

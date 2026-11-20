@@ -129,6 +129,7 @@ status keeps events queued for the next attempt.
 {
   "events": [
     {
+      "eventId": "9f1c2b4e-5d3a-4f8c-9a71-2b6d4e8c1f03",
       "eventName": "screen_view",
       "uid": "u_123",
       "funnel": "onboarding",
@@ -147,6 +148,13 @@ status keeps events queued for the next attempt.
   ]
 }
 ```
+
+`eventId` is a UUID v4 minted when the event is created and stored with it.
+It is the de-duplication key: if the tab closes before the `202` arrives, the
+event stays queued and is re-sent on the next page view carrying the **same**
+`eventId` (and the same `timestamp`), so the backend can drop the repeat.
+Treat `eventId` as unique per event and ignore any event whose `eventId` has
+already been ingested.
 
 `country` is added by the backend from the request IP.
 

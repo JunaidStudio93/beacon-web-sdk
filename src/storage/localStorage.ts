@@ -1,4 +1,5 @@
 import { BeaconEvent } from '../eventModel';
+import { uuidV4 } from '../uuid';
 import { BeaconStorage, StoredEvent } from './types';
 
 const DEFAULT_KEY = 'beacon_events';
@@ -23,14 +24,39 @@ export class LocalStorageBeaconStorage implements BeaconStorage {
       const raw = localStorage.getItem(this.key);
       if (!raw) return { nextId: 1, rows: [] };
       const parsed = JSON.parse(raw) as { nextId?: number; rows?: StoredEvent[] };
-      return {
-        nextId: parsed.nextId ?? 1,
-        rows: Array.isArray(parsed.rows) ? parsed.rows : [],
-      };
+      const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+      const nextId = parsed.nextId ?? 1;
+      return { nextId, rows: this.backfillEventIds(rows, nextId) };
     } catch (_) {
       // Corrupt or unreadable: start clean rather than throw into the app.
       return { nextId: 1, rows: [] };
     }
+  }
+
+  /// Gives an id to rows written by an SDK version that predates `eventId`.
+  ///
+  /// The id is minted on this read and written back, so the row keeps it
+  /// across retries. It cannot be matched against a copy delivered before the
+  /// upgrade, since that copy carried no id at all — a one-time residual
+  /// limited to whatever was in the queue when the page picked up the new SDK.
+  private backfillEventIds(rows: StoredEvent[], nextId: number): StoredEvent[] {
+    let changed = false;
+    const filled = rows.map((row) => {
+      if (row.event?.eventId) return row;
+      changed = true;
+      return { ...row, event: { ...row.event, eventId: uuidV4() } };
+    });
+
+    if (changed) {
+      try {
+        localStorage.setItem(this.key, JSON.stringify({ nextId, rows: filled }));
+      } catch (_) {
+        // Could not persist the backfill; the ids are still used for this
+        // upload, and the next read mints fresh ones.
+      }
+    }
+
+    return filled;
   }
 
   private write(state: { nextId: number; rows: StoredEvent[] }): void {
