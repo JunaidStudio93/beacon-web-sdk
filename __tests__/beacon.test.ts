@@ -2,6 +2,7 @@ import { Beacon, BeaconClient } from '../src/beacon';
 import { LocalStorageBeaconStorage } from '../src/storage/localStorage';
 import { MemoryBeaconStorage } from '../src/storage/memory';
 import { sanitizeName, sanitizeValue } from '../src/sanitize';
+import { Runtime } from '../src/runtime';
 
 interface CapturedRequest {
   url: string;
@@ -554,5 +555,102 @@ describe('event ids', () => {
     const again = await storage.allPending();
     expect(again[0].event.eventId).toBe(rows[0].event.eventId);
     expect(JSON.parse(fake.getItem('beacon_events')!).nextId).toBe(8);
+  });
+});
+
+/// Analytics must never break the calling page. Every storage failure is
+/// logged and swallowed; the only things push() and flush() may raise are
+/// programming errors.
+///
+/// The bundled localStorage queue already degrades on its own — every access
+/// in it is guarded — so what these cover is a storage the host supplied, and
+/// the contract itself.
+describe('a storage that fails', () => {
+  class BrokenStorage extends MemoryBeaconStorage {
+    constructor(private readonly failOn: 'insert' | 'count' | 'read') {
+      super();
+    }
+
+    async insertEvent(
+      event: Parameters<MemoryBeaconStorage['insertEvent']>[0],
+    ): Promise<number> {
+      if (this.failOn === 'insert') throw new Error('quota exceeded');
+      return super.insertEvent(event);
+    }
+
+    async pendingCount(): Promise<number> {
+      if (this.failOn === 'count') throw new Error('storage is blocked');
+      return super.pendingCount();
+    }
+
+    async allPending(): Promise<
+      Awaited<ReturnType<MemoryBeaconStorage['allPending']>>
+    > {
+      if (this.failOn === 'read') throw new Error('storage is unreadable');
+      return super.allPending();
+    }
+  }
+
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    warn.mockRestore();
+    await Beacon.dispose();
+  });
+
+  function start(
+    storage: MemoryBeaconStorage,
+    runtime: Runtime = 'server',
+  ): Promise<BeaconClient> {
+    return Beacon.initialize({
+      apiKey: 'k',
+      baseUrl: 'https://example.com',
+      batchSize: 5,
+      fetchFn: mockClient(() => 202),
+      // No window to listen on under the node test environment.
+      autoFlushOnHide: false,
+      runtime,
+      storage,
+      platform: 'web',
+      appVersion: '3.1.0',
+    });
+  }
+
+  test('initialize survives a queue it cannot read', async () => {
+    // initialize() sends what a previous page view left behind. If that
+    // rejected, a page awaiting Beacon.initialize() on load would come up
+    // with no analytics at all, or fail to come up.
+    const client = await start(new BrokenStorage('read'));
+    expect(Beacon.isInitialized).toBe(true);
+    await expect(client.flush()).resolves.toBeUndefined();
+  });
+
+  test('push does not throw when the event cannot be stored', async () => {
+    const client = await start(new BrokenStorage('insert'));
+    await expect(
+      client.push({ eventName: 'checkout', funnel: 'shop', type: 'click' }),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  test('push keeps the event when only the flush decision fails', async () => {
+    // The browser runtime, because a server invocation never batches: it
+    // sends on every push and so never asks for the count at all.
+    const storage = new BrokenStorage('count');
+    const client = await start(storage, 'browser');
+
+    await expect(
+      client.push({ eventName: 'checkout', funnel: 'shop', type: 'click' }),
+    ).resolves.toBeUndefined();
+
+    // The row was written before the count was asked for, so it is still
+    // queued and the next page view sends it.
+    expect(
+      await MemoryBeaconStorage.prototype.allPending.call(storage),
+    ).toHaveLength(1);
   });
 });
