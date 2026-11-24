@@ -9,7 +9,7 @@ import { detectRuntime, hasLocalStorage, Runtime } from './runtime';
 import { sanitizeName, sanitizeValue } from './sanitize';
 import { LocalStorageBeaconStorage } from './storage/localStorage';
 import { MemoryBeaconStorage } from './storage/memory';
-import { BeaconStorage } from './storage/types';
+import { BeaconStorage, StoredEvent } from './storage/types';
 import { BeaconUploader } from './uploader';
 import { uuidV4 } from './uuid';
 
@@ -161,23 +161,40 @@ export class BeaconClient {
     // Minted here, at creation, not at upload: the id is stored alongside the
     // event, so an event resent after a tab closed before the 202 landed
     // arrives with the id it was born with and the backend can drop it.
-    await this.storage.insertEvent({
-      eventId: uuidV4(),
-      eventName: sanitizeName(eventName),
-      funnel: sanitizeName(funnel),
-      uid,
-      email,
-      sessionToken: this.config.sessionToken,
-      timestamp: new Date().toISOString(),
-      properties: props,
-    });
+    try {
+      await this.storage.insertEvent({
+        eventId: uuidV4(),
+        eventName: sanitizeName(eventName),
+        funnel: sanitizeName(funnel),
+        uid,
+        email,
+        sessionToken: this.config.sessionToken,
+        timestamp: new Date().toISOString(),
+        properties: props,
+      });
+    } catch (e) {
+      // The event is lost, and that is the right trade: a browser that will
+      // not let the queue be written is not a reason for the host page's
+      // checkout to throw. The bundled localStorage queue already degrades
+      // this way on its own; a storage the host supplied may not.
+      console.warn('Beacon: could not queue event; dropped', e);
+      return;
+    }
 
     if (sendNow) {
       await this.flush();
       return;
     }
 
-    const count = await this.storage.pendingCount();
+    let count: number;
+    try {
+      count = await this.storage.pendingCount();
+    } catch (e) {
+      // The row is already queued; only the decision to flush now is lost,
+      // and the next push or page view makes it again.
+      console.warn('Beacon: could not read the pending count', e);
+      return;
+    }
     if (count >= this.config.batchSize) {
       await this.flush();
     }
@@ -249,7 +266,18 @@ export class BeaconClient {
   }
 
   private async flushInternal(): Promise<void> {
-    const rows = await this.storage.allPending();
+    // Storage failures stop here rather than travelling out through flush().
+    // Beacon.initialize() awaits a flush, so a storage that throws on read
+    // would otherwise make initialization itself reject — and a page that
+    // awaits Beacon.initialize() on load would come up with no analytics at
+    // all, or not come up.
+    let rows: StoredEvent[];
+    try {
+      rows = await this.storage.allPending();
+    } catch (e) {
+      console.warn('Beacon: could not read the queue; nothing uploaded', e);
+      return;
+    }
     if (rows.length === 0) return;
 
     const events: BeaconEvent[] = rows.map((row) => row.event);

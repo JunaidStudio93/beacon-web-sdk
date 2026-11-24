@@ -1,5 +1,13 @@
 ## Unreleased
 
+* A failing storage no longer breaks the calling page. A failure to read or
+  write the queue is logged and swallowed inside `push()` and `flush()` — the
+  same treatment network failures already had. Because `Beacon.initialize()`
+  sends what a previous page view left behind, this is also what let a storage
+  that throws on read make initialization itself reject. The bundled
+  `localStorage` queue already degraded on its own; a storage the host
+  supplies is now held to the same contract.
+
 * Add a unique `eventId` (UUID v4) to every event. It is generated when the
   event is created, stored in the queue alongside it, and sent as a top-level
   field on `/track`. An event that is re-sent — because the tab was closed or
